@@ -1,0 +1,18 @@
+// Sipeed Tang Nano 20K (GW2AR-LV18QN88C8/I7)
+// 27 MHz oscillator and onboard active-low LEDs.
+IO_LOC "clk" 4;
+IO_PORT "clk" IO_TYPE=LVCMOS33;
+CLOCK_LOC "clk" BUFG;
+
+IO_LOC "led_n[0]" 15;
+IO_LOC "led_n[1]" 16;
+IO_LOC "led_n[2]" 17;
+IO_LOC "led_n[3]" 18;
+IO_LOC "led_n[4]" 19;
+IO_LOC "led_n[5]" 20;
+IO_PORT "led_n[0]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_PORT "led_n[1]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_PORT "led_n[2]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_PORT "led_n[3]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_PORT "led_n[4]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_PORT "led_n[5]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
