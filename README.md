@@ -20,7 +20,11 @@ The `oss` command opens a dedicated OSS CAD Suite shell. **Run the build inside 
    .\build.ps1 -Program -Flash
    ```
 
-That one build command runs Yosys synthesis, nextpnr placement/routing, `gowin_pack`, then openFPGALoader to write and verify the onboard flash. It does not invoke Arch, WSL, or Gowin IDE. The flash operation is persistent. For a temporary SRAM test, run `.\build.ps1 -Program` instead.
+That command builds the SMI-connected TangNanoGPU HDMI design, then uses
+openFPGALoader to write and verify onboard flash. It does not invoke Arch,
+WSL, or Gowin IDE. The flash operation is persistent. For a temporary SRAM
+load, run `.\build.ps1 -Program` instead. Without `-Program`, the bitstream
+is built at `build/gpu-smi/top.fs`.
 
 Other commands, also from the `[OSS CAD Suite]` prompt:
 
@@ -37,29 +41,72 @@ Other commands, also from the `[OSS CAD Suite]` prompt:
 
 Install a current Windows OSS CAD Suite with Yosys `synth_gowin`, `nextpnr-himbaechel` with the Gowin backend, and Apicula `gowin_pack` 0.34 or newer. The `oss` shell wrapper must activate that suite. No USB forwarding into WSL is needed.
 
-Edit `rtl/top.sv` and add Verilog/SystemVerilog files directly under `rtl/`. Update `constraints/tangnano20k.cst` when top-level ports change. Every external top-level port must be assigned to a valid FPGA pin.
+The GPU build selects `top_tangnano20k` and its explicit RTL source list in
+`build.ps1`. `rtl/top.sv` remains the small heartbeat bring-up design and is
+not used by this GPU build. Update the GPU constraint files in `constraints/`
+when GPU top-level ports change.
 
-## Starter design
+## Heartbeat reference design
 
-The checked-in RTL is a heartbeat bring-up design: the 27 MHz board clock blinks onboard LED0. It checks the toolchain and programming path; it is not the GPU yet. The starter CST maps the clock and six onboard active-low LEDs (pins 15–20). The Tang Nano 20K clock input is pin 4 and LED0 is pin 15.
+`rtl/top.sv` is retained as a minimal heartbeat bring-up example. The active
+GPU build uses `rtl/top_tangnano20k.v`, the renderer, SDRAM controller, HDMI
+scanout, and the SMI adapter below.
 
 | File | Purpose |
 | --- | --- |
-| `rtl/top.sv` | FPGA top-level starter RTL |
-| `constraints/tangnano20k.cst` | Tang Nano 20K pin constraints |
-| `build.ps1` | Windows build/program script |
-| `build/` | Generated JSON and `.fs`; ignored by Git |
+| `rtl/top.sv` | Heartbeat reference top (not selected by `build.ps1`) |
+| `rtl/top_tangnano20k.v` | Active GPU/SMI integration top selected by the build |
+| `constraints/gpu_*.cst` | GPU board, HDMI, and SMI pin constraints |
+| `build.ps1` | Windows GPU build/program script |
+| `build/gpu-smi/` | Generated GPU JSON, logs, reports, and `.fs`; ignored by Git |
 
 Device setup: `GW2AR-LV18QN88C8/I7`; nextpnr and `gowin_pack` family database: `GW2A-18C`.
 
 ## What the script does
 
-1. Collect `.v` and `.sv` files directly from `rtl/`, synthesize top module `top` to `build/top.json`.
-2. Run nextpnr with the Tang Nano 20K device and CST to produce `build/top_pnr.json`.
-3. Pack the routed design as `build/top.fs`.
+1. Synthesize the selected SMI GPU RTL source list with `synth_gowin` and the BRAM OCE fix to `build/gpu-smi/top.json`.
+2. Run nextpnr with the Tang Nano 20K device, merged GPU constraints, and seed 1 to produce `build/gpu-smi/top_pnr.json`.
+3. Pack the routed design as `build/gpu-smi/top.fs`.
 4. With `-Program`, load SRAM. With `-Program -Flash`, write and verify onboard flash.
 
-The 16-bit SMI signals from the project notes are not mapped in the starter CST. Their final assignments depend on the display output and board pin multiplexing. Confirm the Tang Nano 20K schematic, available pins, 3.3 V signaling, and Pi SMI timing before adding those constraints.
+## SMI porting materials
+
+The Raspberry Pi host transport and a first drawing demo are in [`pi/`](pi/).
+See [`pi/README.md`](pi/README.md) for wiring and the Pi-side run command.
+
+The following required GPU and SMI files were copied selectively from
+TangNanoGPU and are used by the active build:
+
+| File | Role |
+| --- | --- |
+| `rtl/smi_gpu.v`, `rtl/async_fifo.v` | SMI receiver and its clock-domain crossing FIFO |
+| `rtl/gpu_exec.v`, `rtl/byte_fifo.v`, `rtl/bram_sdp.v` | Drawing command parser/engine and command/response FIFO storage |
+| `rtl/scanout.v`, `rtl/video_timing.v`, `rtl/dvi_tx.v`, `rtl/tmds_encoder.v` | Framebuffer scanout and HDMI output path |
+| `rtl/sdram_ctrl.v`, `rtl/clocks.v` | SDRAM controller and board clocks/PLLs |
+| `rtl/top_tangnano20k.v` | TangNanoGPU integration top, retained as source reference |
+| `constraints/gpu_base.cst`, `constraints/gpu_hdmi.cst`, `constraints/gpu_link_hdmi_smi.cst` | GPU clock/board, HDMI, and SMI pin constraints used by the active build |
+| `tools/fix_bram_oce.py` | Yosys netlist adjustment used by the upstream GPU build |
+| `LICENSE-TangNanoGPU` | Upstream Apache 2.0 license for the imported RTL/build utility |
+
+**The GPU RTL source set is selected by `build.ps1`, and synthesis, placement,
+routing, and bitstream packing have succeeded.** The current SMI receiver is
+write-only. A Raspberry Pi 4B userspace sender is in `pi/`, but the design
+has not been tested on a physical Tang Nano 20K. The current pin map keeps
+the HDMI pins separate from the listed SMI pins.
+Functional simulation was skipped at your request, so SMI frame behavior has
+not been verified in simulation. The Pi sender has not yet been exercised on
+physical hardware.
+
+The proposed pin mapping is: SWE_N FPGA 77, SA0 75, SD[0:15] =
+73, 74, 27, 28, 26, 25, 29, 30, 31, 42, 41, 48, 49, 86, 72, 71.
+FPGA pin 76 is assigned to the top-level `gpu_busy` output (SMI BUSY).
+nextpnr completed with these constraints for the HDMI design.
+The current receiver is write-only: PING, STATUS, and pixel readback are not
+implemented over SMI.
+
+The local build generated `build/gpu-smi/top.fs` (4,620,140 bytes). An upload
+attempt reported `unable to open ftdi device: -3 (device not found)`; the FPGA
+board was not connected, so no hardware programming or display check occurred.
 
 ## Troubleshooting
 

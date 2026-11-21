@@ -13,10 +13,19 @@ if ($Flash -and -not $Program) {
 }
 
 $projectRoot = $PSScriptRoot
-$buildDir = Join-Path $projectRoot 'build'
+$buildDir = Join-Path $projectRoot 'build\gpu-smi'
 $rtlDir = Join-Path $projectRoot 'rtl'
-$cst = Join-Path $projectRoot 'constraints\tangnano20k.cst'
-$sources = @(Get-ChildItem -LiteralPath $rtlDir -File | Where-Object { $_.Extension -in '.v', '.sv' } | Sort-Object FullName)
+$constraintFiles = @(
+    (Join-Path $projectRoot 'constraints\gpu_base.cst'),
+    (Join-Path $projectRoot 'constraints\gpu_hdmi.cst'),
+    (Join-Path $projectRoot 'constraints\gpu_link_hdmi_smi.cst')
+)
+$sourceNames = @(
+    'top_tangnano20k.v', 'clocks.v', 'smi_gpu.v', 'async_fifo.v',
+    'byte_fifo.v', 'bram_sdp.v', 'gpu_exec.v', 'scanout.v',
+    'video_timing.v', 'sdram_ctrl.v', 'dvi_tx.v', 'tmds_encoder.v'
+)
+$sources = @($sourceNames | ForEach-Object { Join-Path $rtlDir $_ })
 
 if ($Clean -and (Test-Path -LiteralPath $buildDir)) {
     $resolvedBuild = [IO.Path]::GetFullPath($buildDir)
@@ -27,9 +36,18 @@ if ($Clean -and (Test-Path -LiteralPath $buildDir)) {
     Remove-Item -LiteralPath $resolvedBuild -Recurse -Force
 }
 
-if ($sources.Count -eq 0) { throw "No Verilog/SystemVerilog source files found under $rtlDir" }
-if (-not (Test-Path -LiteralPath $cst)) { throw "Missing constraints file: $cst" }
+foreach ($source in $sources) {
+    if (-not (Test-Path -LiteralPath $source)) { throw "Missing GPU RTL source: $source" }
+}
+foreach ($constraintFile in $constraintFiles) {
+    if (-not (Test-Path -LiteralPath $constraintFile)) { throw "Missing GPU constraint file: $constraintFile" }
+}
 New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
+$tempDir = Join-Path $buildDir 'tmp'
+New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+$env:TEMP = $tempDir
+$env:TMP = $tempDir
+$env:TMPDIR = $tempDir
 
 # Add an extracted OSS CAD Suite directory without changing the user's persistent PATH.
 if ($env:OSS_CAD_SUITE) {
@@ -56,6 +74,7 @@ function Invoke-Tool([string]$Name, [string[]]$Arguments) {
 $yosys = Resolve-Tool 'yosys'
 $nextpnr = Resolve-Tool 'nextpnr-himbaechel'
 $gowinPack = Resolve-Tool 'gowin_pack'
+$python = Resolve-Tool 'python'
 $loader = if ($Program) { Resolve-Tool 'openFPGALoader' } else { $null }
 
 foreach ($toolPath in @($yosys, $nextpnr, $gowinPack)) {
@@ -64,17 +83,27 @@ foreach ($toolPath in @($yosys, $nextpnr, $gowinPack)) {
 
 $json = Join-Path $buildDir 'top.json'
 $pnrJson = Join-Path $buildDir 'top_pnr.json'
+$yosysLog = Join-Path $buildDir 'synth.log'
+$pnrLog = Join-Path $buildDir 'pnr.log'
+$pnrReport = Join-Path $buildDir 'top_report.json'
 $fs = Join-Path $buildDir 'top.fs'
-$srcArgs = ($sources | ForEach-Object { 'read_verilog -sv "' + $_.FullName.Replace('\', '/') + '"' }) -join '; '
-$yosysScript = "$srcArgs; synth_gowin -top top -json `"$($json.Replace('\', '/'))`""
+$cst = Join-Path $buildDir 'tangnano20k_gpu_smi.cst'
+$constraintText = ($constraintFiles | ForEach-Object { Get-Content -LiteralPath $_ -Raw }) -join "`r`n"
+Set-Content -LiteralPath $cst -Value $constraintText -NoNewline -Encoding ascii
+$srcArgs = ($sources | ForEach-Object { 'read_verilog -sv -DLINK_SMI "' + $_.Replace('\', '/') + '"' }) -join '; '
+$yosysScript = "$srcArgs; synth_gowin -top top_tangnano20k; simplemap t:`$buf; opt_clean; write_json `"$($json.Replace('\', '/'))`""
 
-Invoke-Tool $yosys @('-p', $yosysScript)
+Invoke-Tool $yosys @('-Q', '-q', '-l', $yosysLog, '-p', $yosysScript)
+Invoke-Tool $python @((Join-Path $projectRoot 'tools\fix_bram_oce.py'), $json)
 Invoke-Tool $nextpnr @(
     '--json', $json,
     '--write', $pnrJson,
+    '--report', $pnrReport,
+    '-l', $pnrLog,
     '--device', 'GW2AR-LV18QN88C8/I7',
     '--vopt', 'family=GW2A-18C',
-    '--vopt', "cst=$cst"
+    '--vopt', "cst=$cst",
+    '--seed', '1'
 )
 Invoke-Tool $gowinPack @('-d', 'GW2A-18C', '-o', $fs, $pnrJson)
 
